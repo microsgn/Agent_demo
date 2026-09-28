@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "amap-maps": {
+      "type": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/e811d0783d6943/mcp"
+    },
+    "fetch": {
+      "type": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/e84e40fa2ccd4c/mcp"
+    }
+  }
+}

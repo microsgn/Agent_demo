@@ -1,0 +1,25 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "microsgn", email = "2168456392@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "dashscope>=1.27.6",
+    "dotenv>=0.9.9",
+    "httpx>=0.28.1",
+    "matplotlib>=3.11.1",
+    "openai>=3.8.0",
+    "pymilvus>=3.0.2",
+    "redis>=8.1.0",
+]
+
+[project.scripts]
+agent = "agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
