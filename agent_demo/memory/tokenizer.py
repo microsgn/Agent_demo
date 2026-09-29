@@ -9,6 +9,8 @@ import re
 _TOKEN_RE = re.compile(r'[\u4e00-\u9fff]+|[A-Za-z0-9]+')
 
 def tokenize(text:str)->list[str]:
+    if text is None:
+        raise TypeError("输入文本为空")
     tokens:list[str] = []
     for seg in _TOKEN_RE.findall(text):
         if seg[0].isascii():

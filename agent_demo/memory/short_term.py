@@ -20,10 +20,11 @@ store_roles = {"user","assistant","tool"}
 SCAN = 1000
 BM25_TOP = 50
 ALPHA = 0.4
+MIN_VEC_SIM = 0.50      # 最低余弦相似度，低于此值视为"都不相关"。与 Memory.MIN_BEST_SIM 同尺
 
 class ShortTermMemory():
-    def __init__(self,host,port,prefix:str = key_prefix):
-        self.store = redis.Redis(host = host,port = port,decode_responses = True)
+    def __init__(self,host:str = HOST,port:str = PORT,prefix:str = key_prefix):
+        self.store = redis.Redis(host = host,port = int(port),decode_responses = True)
         self.prefix = prefix
 
     def key(self,session_id:str,user_id:str = "default")->tuple[str,str]:
@@ -32,7 +33,6 @@ class ShortTermMemory():
 
     def add_filter(self, message: list[dict],prev:dict|None = None) -> list[dict]:
         """返回规范化后的消息；返回 None = 这条不该入库。
-
         只负责三件事，不做任何语义判断：
           1. 形状：role 白名单 + 非空 content + 字段规整
           2. 体积：普通 2000 / 工具结果 600 字符截断
@@ -88,7 +88,7 @@ class ShortTermMemory():
         prepared = []
         for msg in item:
             try:
-                vec = embed.fetch(msg["content"])[0]
+                vec = embed.embed([msg["content"]])[0]
             except Exception as e:
                 print(f"embedding失败:{e}")
                 vec = []
@@ -120,7 +120,23 @@ class ShortTermMemory():
         except Exception as e:
             print(f"存储出错{e}")
             return False
-
+    def recent(self,session_id:str,limit:int = 20,user_id:str = "default")->list[dict]:
+        """取最近 limit 轮，按时间正序（旧→新）返回。不做相关性过滤、不做分数门槛。"""
+        k_list,_ = self.key(session_id,user_id)
+        try:
+            raw = self.store.lrange(k_list,0,limit - 1)      # index 0 是最新
+        except Exception as e:
+            print(f"查询出错{e}")
+            return []
+        if not raw:
+            return []
+        items = []
+        for msg in reversed(raw):                            # lrange 拿的是 新→旧，翻成 旧→新
+            try:
+                items.append(json.loads(msg))
+            except (ValueError, TypeError):
+                continue
+        return items
 
     def search_filter(self, m:dict | None = None,roles:set[str] |None = None,max_age:float | None = None,now:float|None = None)->bool:
         if roles and m.get("role") not in roles:
@@ -156,8 +172,8 @@ class ShortTermMemory():
         # 2.向量精排
         vec_score:dict[int,float] = {}
         try:
-            qv = np.asarray(embed.fetch(query)[0], dtype="<f4")
-            if qv.size == 1024 and cand:
+            qv = np.asarray(embed.embed([query])[0], dtype="<f4")
+            if qv.size == embed.DIM and cand:
                 blobs = self.store.hmget(k_vec, [items[i]["mid"] for i in cand])
                 for i, b in zip(cand, blobs):
                     if b:
@@ -165,19 +181,30 @@ class ShortTermMemory():
                         vec_score[i] = float(v @ qv)          # 向量已 L2 归一化
         except Exception:
             pass                                              # 向量不可用 → 退化为纯 BM25
-
+        if vec_score:
+            if max(vec_score.values()) < MIN_VEC_SIM:
+                return []
+            else:
+                if not cand or scores[cand[0]] <= 0:
+                    return []
         # ③ 融合：min-max 归一化后加权（BM25 与余弦量纲不同，必须先归一化）
         def norm(d: dict[int, float]) -> dict[int, float]:
             if not d:
                 return {}
             lo, hi = min(d.values()), max(d.values())
-            return {k: (v - lo) / (hi - lo) if hi > lo else 1.0 for k, v in d.items()}
+            if hi > lo:
+                return {k: (v - lo) / (hi - lo) for k,v in d.items()}
+            elif hi == lo and lo == 0:
+                return {k: 0.0 for k,_ in d.items()}
+            else:
+                return {k: 1.0 for k,_ in d.items()}
+
         nb, nv = norm({i: scores[i] for i in cand}), norm(vec_score)
         fused = {i: ALPHA * nb.get(i, 0.0) + (1 - ALPHA) * nv.get(i, 0.0) for i in cand}
         top = sorted(fused, key=lambda i: -fused[i])[:limit]
 
         out = [items[i] for i in top]
-        out.reverse()                                        # 新→旧 转 旧→新
+        out.sort(key = lambda m:m["ts"])                                    # 新→旧 转 旧→新
         return out
 
     @staticmethod

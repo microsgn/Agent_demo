@@ -7,8 +7,8 @@ class BM25:
         self.k1 = k1
         self.b = b
         self.N = len(docs_tokens)
-        self.len = [len(d) for d in docs_tokens]
-        self.avg = (sum(self.len)/self.N) if self.N > 0 else 1.0
+        self.length = [len(d) for d in docs_tokens]
+        self.avg = (sum(self.length)/self.N) if self.N > 0 else 1.0
 
         self.tf = [Counter(d) for d in docs_tokens]
         self.df = Counter()
@@ -23,6 +23,7 @@ class BM25:
                 self.postings.setdefault(w,[]).append((i,f))
 
     def score_all(self,query_tokens:list[str])->list[float]:
+        """计算BM25检索的得分"""
         out = [0.0] * self.N
         for w in set(query_tokens):
             idf = self.idf.get(w)

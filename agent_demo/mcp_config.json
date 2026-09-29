@@ -6,7 +6,7 @@
     },
     "fetch": {
       "type": "streamable_http",
-      "url": "https://mcp.api-inference.modelscope.net/e84e40fa2ccd4c/mcp"
+      "url": "https://mcp.api-inference.modelscope.net/b5a818ff8a9c4b/mcp"
     }
   }
 }
