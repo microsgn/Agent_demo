@@ -63,8 +63,9 @@ def _cache_get(keys:list[str])->dict[str,list[float]]:
         ph = ",".join(["?"]*len(chunks))
         with closing(sqlite3.connect(_CACHE_DB,timeout = 30)) as conn:
             rows = conn.execute(
-                f"SELECT hash,vec FROM cache WHERE hash IN ({ph})"
-            )
+                f"SELECT hash,vec FROM cache WHERE hash IN ({ph})",
+                chunks
+            ).fetchall()
         for h,blob in rows:
             try:
                 vec = _unpack(blob)
@@ -80,12 +81,10 @@ def _cache_put(items:dict[str,tuple[str,list[float]]])->None:
         return
     rows = [(h,t,_pack(v),time.time())for h,(t,v) in items.items()]
     with closing(sqlite3.connect(_CACHE_DB,timeout = 30)) as conn,conn:
-        conn.execute(
+        conn.executemany(
             """INSERT OR REPLACE INTO cache(hash,text,vec,created_at) VALUES(?,?,?,?)""",
             rows,
         )
-
-
 
 def embed(texts:list[str],batch_size:int = 20)->list:
     if len(texts) == 0:
@@ -149,9 +148,4 @@ def call_llm(texts:list[str])->dict:
             time.sleep(0.5 * 2 ** attempt + random.uniform(0, 0.3))
     raise RuntimeError(f"embedding 重试 {max_retries} 次仍失败")
 
-if __name__ == "__main__":
-    input = ["如何处理好人际关系呢","华尧宽一定能成功","你好"]
-    response = embed(input)
-    for resp in response:
-        print(f"{resp["text_index"] + 1}:{resp['text']}")
 
