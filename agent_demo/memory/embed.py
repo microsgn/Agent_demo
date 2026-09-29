@@ -32,23 +32,95 @@ def _unpack(blob:bytes)->list[float]:
 import sqlite3
 from contextlib import closing
 
+class EmbeddingError(RuntimeError):
+    """embedding 相关错误（调用方可以精确 catch 这个）"""
 
 def fetch(text):
     pass
 
+def _cache_init()->None:
+    with closing(sqlite3.connect(_CACHE_DB,timeout = 30)) as conn,conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cache (
+                hash TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                vec  BLOB NOT NULL,
+                created_at REAL NOT NULL
+            )
+        """)
+
+def _key(text:str)->str:
+    """缓存键 = 模型 + 维度 + 原文。换模型/换维度会自动失效."""
+    return hashlib.sha256(f"{EMBED_MODEL}|{DIM}|{text}".encode()).hexdigest()
+
+def _cache_get(keys:list[str])->dict[str,list[float]]:
+    out:dict[str,list[float]] = {}
+    for start in range(0,len(keys),500):
+        chunks = keys[start:start+500]
+        if not chunks:
+            continue
+        ph = ",".join(["?"]*len(chunks))
+        with closing(sqlite3.connect(_CACHE_DB,timeout = 30)) as conn:
+            rows = conn.execute(
+                f"SELECT hash,vec FROM cache WHERE hash IN ({ph})"
+            )
+        for h,blob in rows:
+            try:
+                vec = _unpack(blob)
+            except ValueError:
+                continue
+            if len(vec) == DIM:
+                out[h] = vec
+    return out
+
+def _cache_put(items:dict[str,tuple[str,list[float]]])->None:
+    """批量写"""
+    if not items:
+        return
+    rows = [(h,t,_pack(v),time.time())for h,(t,v) in items.items()]
+    with closing(sqlite3.connect(_CACHE_DB,timeout = 30)) as conn,conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO cache(hash,text,vec,created_at) VALUES(?,?,?,?)""",
+            rows,
+        )
+
+
 
 def embed(texts:list[str],batch_size:int = 20)->list:
-    out = []
-    for i in range(0, len(texts), batch_size):
-        chunks = texts[i:i+batch_size]
-        resp = call_llm(chunks)
-        ans = resp["embeddings"]
-        for em in ans:
-            em["text"] = chunks[em["text_index"]]
-            em["id"] = em["text_index"] + i
-            out.append(em)
-    output = sorted(out, key = lambda x : x["id"])
-    return output
+    if len(texts) == 0:
+        return []
+    _cache_init()
+    keys = [_key(t) for t in texts]
+    # 1. 查缓存
+    got = _cache_get(keys)
+    # 2. 存储未命中的下标，哈希法可以去重，去掉重复存储的
+    miss_pos :dict[str,int] = {}
+    for i,k in enumerate(keys):
+        miss_pos[k] = i
+    miss_hash = list(miss_pos)
+    # 3. 处理未命中的
+    for i in range(0,len(miss_hash),batch_size):
+        batch = miss_hash[i:i+batch_size]
+        chunks = [texts[miss_pos[k]] for k in batch]
+        resp = call_llm(chunks)["embeddings"]
+        seen : set[int] = set()
+        for em in resp:
+            local = em["text_index"]
+            if not isinstance(local, int) or not 0 <= local < len(texts):
+                raise EmbeddingError(f"text_index越界：{local!r}")
+            if local in seen:
+                raise EmbeddingError(f"重复存入")
+            seen.add(local)
+
+            vec = em["embedding"]
+            if len(vec) != DIM:
+                raise EmbeddingError(f"向量维度不对")
+            got[batch[local]] = vec
+        if len(seen) != len(chunks):
+            raise EmbeddingError(f"响应数量不匹配")
+        _cache_put({k:(texts[miss_pos[k]],got[k])for k in batch})
+    return [got[k] for k in keys]
 
 ## 处理网络请求出错修改
 def call_llm(texts:list[str])->dict:
