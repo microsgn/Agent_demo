@@ -24,7 +24,8 @@ def search_city(city: str):
 def get_weather(city:str):
     """
     查询具体城市的实时天气情况
-    :param city: 城市名称
+
+    city: 哈尔滨/北京/上海 - 城市名称
     """
     response1 = search_city(city)
     response = json.loads(response1)

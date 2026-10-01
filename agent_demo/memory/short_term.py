@@ -25,6 +25,7 @@ MIN_VEC_SIM = 0.50      # 最低余弦相似度，低于此值视为"都不相�
 class ShortTermMemory():
     def __init__(self,host:str = HOST,port:str = PORT,prefix:str = key_prefix):
         self.store = redis.Redis(host = host,port = int(port),decode_responses = True)
+        self._raw = redis.Redis(host=host, port=int(port), decode_responses=False)
         self.prefix = prefix
 
     def key(self,session_id:str,user_id:str = "default")->tuple[str,str]:
@@ -120,6 +121,7 @@ class ShortTermMemory():
         except Exception as e:
             print(f"存储出错{e}")
             return False
+
     def recent(self,session_id:str,limit:int = 20,user_id:str = "default")->list[dict]:
         """取最近 limit 轮，按时间正序（旧→新）返回。不做相关性过滤、不做分数门槛。"""
         k_list,_ = self.key(session_id,user_id)
@@ -145,7 +147,7 @@ class ShortTermMemory():
             return False
         return True
 
-    def search(self,session_id:str,query:str,limit:int = 6,user_id :str = "default",roles:set[str]|None = None,max_age:float|None = None)->list[dict]:
+    def search(self,session_id:str,query:str,limit:int = 10,user_id :str = "default",roles:set[str]|None = None,max_age:float|None = None)->list[dict]:
         k_list,k_vec = self.key(session_id,user_id)
         try:
             raw = self.store.lrange(k_list,0,SCAN - 1)
@@ -174,7 +176,7 @@ class ShortTermMemory():
         try:
             qv = np.asarray(embed.embed([query])[0], dtype="<f4")
             if qv.size == embed.DIM and cand:
-                blobs = self.store.hmget(k_vec, [items[i]["mid"] for i in cand])
+                blobs = self._raw.hmget(k_vec, [items[i]["mid"] for i in cand])   # ← 用 _raw
                 for i, b in zip(cand, blobs):
                     if b:
                         v = np.frombuffer(b, dtype="<f4")

@@ -30,7 +30,7 @@ class BM25:
             if idf is None:
                 continue
             for i,f in self.postings[w]:
-                denom = f + self.k1*(1-self.b + self.b * self.len[i] / self.avg)
+                denom = f + self.k1*(1-self.b + self.b * self.length[i] / self.avg)
                 out[i] += idf * f *(self.k1 + 1) / denom
         return out
 

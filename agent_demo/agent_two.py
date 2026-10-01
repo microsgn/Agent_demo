@@ -3,15 +3,12 @@ import json,inspect
 from dotenv import load_dotenv
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # 让 memory 包可被找到
-from memory.Memory import Memory
-from agent_demo.MCP import MCP
 from mcp_loader import load_mcp_server
 load_dotenv()
 import os
 from memory.short_term import ShortTermMemory
 import re
 from openai import OpenAI
-from tool import get_weather
 from mcp_client import MCPClient
 mapping = {
     str:"string",
@@ -157,7 +154,10 @@ class SimpleAgent:
         self.recent_limit = recent_limit
         self.tool = tool
     def run(self,user_input:str)->str:
-        history = self.stm.recent(self.session_id,limit = self.recent_limit,user_id=self.user_id)
+        recent_msgs = self.stm.recent(self.session_id,limit = self.recent_limit,user_id = self.user_id)
+        recalled = self.stm.search(self.session_id,limit = self.recent_limit,user_id=self.user_id,query = user_input)
+        extra = [m for m in recalled if m["mid"] not in {x["mid"] for x in recent_msgs}]
+        history = sorted(recent_msgs + extra,key = lambda x : x["ts"])
         messages:list[Dict] = [{"role":"system","content":"你是一个智能助手，需要实时信息的时候调用工具，并根据工具返回的真实结果回答用户"}]
         messages.extend(self.stm.to_llm_messages(history))
         messages.append({"role":"user","content":user_input})

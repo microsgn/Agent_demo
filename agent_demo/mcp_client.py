@@ -14,6 +14,7 @@ class MCPClient:
         self.session_id : str| None = None
         self.headers = dict(headers or {})
         self.protocolVersion = protocolVersion
+        self.negotiated_protocol_version: str | None = None
         self._request_ids = itertools.count(1)
         self._tools_cache:dict[str,dict[str,Any]] | None = None
         timeout = httpx.Timeout(
@@ -41,8 +42,8 @@ class MCPClient:
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
 
-        if self.protocolVersion:
-            headers["Mcp-Protocol-Version"] = (self.protocolVersion)
+        if self.negotiated_protocol_version:
+            headers["Mcp-Protocol-Version"] = (self.negotiated_protocol_version)
 
         return headers
 
