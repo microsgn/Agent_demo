@@ -3,10 +3,14 @@
     实现 文本 ——> 向量
 """
 from urllib.error import HTTPError
-
+import requests
 import random
 import dashscope
 import json
+
+from _pytest.assertion import truncate
+
+from models.embed_item import  EmbeddingItem
 from http import HTTPStatus
 import os
 import hashlib
@@ -16,7 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 dashscope.base_http_api_url = os.getenv("QWEN_BASE_URL")
 DIM = 1024
-EMBED_MODEL = "qwen3.7-text-embedding"
+EMBED_MODEL = os.getenv("OLLMA_MODEL")
 BATCH_SIZE = 20
 _CACHE_DB = "embed_cache.db"
 _initialized = False
@@ -87,6 +91,7 @@ def _cache_put(items:dict[str,tuple[str,list[float]]])->None:
         )
 
 def embed(texts:list[str],batch_size:int = 20)->list:
+    """返回texts对应的向量"""
     if len(texts) == 0:
         return []
     _cache_init()
@@ -96,23 +101,24 @@ def embed(texts:list[str],batch_size:int = 20)->list:
     # 2. 存储未命中的下标，哈希法可以去重，去掉重复存储的
     miss_pos :dict[str,int] = {}
     for i,k in enumerate(keys):
-        miss_pos[k] = i
+        if k not in got:
+            miss_pos[k] = i
     miss_hash = list(miss_pos)
     # 3. 处理未命中的
     for i in range(0,len(miss_hash),batch_size):
         batch = miss_hash[i:i+batch_size]
         chunks = [texts[miss_pos[k]] for k in batch]
-        resp = call_llm(chunks)["embeddings"]
+        resp = call_llm(chunks)
         seen : set[int] = set()
         for em in resp:
-            local = em["text_index"]
+            local = em.text_index
             if not isinstance(local, int) or not 0 <= local < len(texts):
                 raise EmbeddingError(f"text_index越界：{local!r}")
             if local in seen:
                 raise EmbeddingError(f"重复存入")
             seen.add(local)
 
-            vec = em["embedding"]
+            vec = em.embedding
             if len(vec) != DIM:
                 raise EmbeddingError(f"向量维度不对")
             got[batch[local]] = vec
@@ -122,19 +128,27 @@ def embed(texts:list[str],batch_size:int = 20)->list:
     return [got[k] for k in keys]
 
 ## 处理网络请求出错修改
-def call_llm(texts:list[str])->dict:
+def call_llm(texts:list[str])->list[EmbeddingItem]:
     status = None
     for attempt in range(max_retries):
         try:
-            response = dashscope.TextEmbedding.call(
-                model = "qwen3.7-text-embedding",
-                api_key = os.getenv("QWEN_API_KEY"),
-                input = texts,
-                dimension = DIM,
+            response_list = []
+            response = requests.post(
+                url = os.getenv("OLLMA_URL"),
+                json ={
+                    "model":os.getenv("OLLMA_MODEL"),
+                    "input":texts,
+                    "truncate":False,
+                },
+                timeout = 30,
             )
             status = response.status_code
             if status == HTTPStatus.OK:
-                return response.output
+                data = response.json()["embeddings"]
+                return [
+                    EmbeddingItem(text_index = i,embedding = v)
+                    for i ,v in enumerate(data)
+                ]
             elif status is not None and status not in RETRYABLE_STATUS:
                 raise RuntimeError(
                     f"embedding 请求失败(不可重试): status={status} "
@@ -144,7 +158,7 @@ def call_llm(texts:list[str])->dict:
         except Exception as e:
             print(e)
         if attempt < max_retries - 1:
-    # 指数退避 + 随机抖动（抖动防止所有客户端同时重试形成尖峰）
+            # 指数退避 + 随机抖动（抖动防止所有客户端同时重试形成尖峰）
             time.sleep(0.5 * 2 ** attempt + random.uniform(0, 0.3))
     raise RuntimeError(f"embedding 重试 {max_retries} 次仍失败")
 

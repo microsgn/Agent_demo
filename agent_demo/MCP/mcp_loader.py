@@ -1,7 +1,7 @@
 import json
-from mcp_client import MCPClient
+from MCP.mcp_client import MCPClient
 
-def load_mcp_server(config_path = "mcp_config.json"):
+def load_mcp_server(config_path = "MCP/mcp_config.json"):
     with open(config_path,encoding="utf-8") as f:
         cfg = json.load(f)
     servers = []

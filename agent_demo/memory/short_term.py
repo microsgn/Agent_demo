@@ -8,7 +8,7 @@ from .tokenizer import tokenize
 import time
 from dotenv import load_dotenv
 load_dotenv()
-
+embed_model = os.getenv("OLLMA_MODEL")
 HOST = os.getenv("REDIS_HOST")
 PORT = os.getenv("REDIS_PORT")
 key_prefix = "mem"
@@ -19,6 +19,8 @@ expire_time = 7 * 24 * 3600
 store_roles = {"user","assistant","tool"}
 SCAN = 1000
 BM25_TOP = 50
+VECTOR_TOP = 50
+RRF_K = 60
 ALPHA = 0.4
 MIN_VEC_SIM = 0.50      # 最低余弦相似度，低于此值视为"都不相关"。与 Memory.MIN_BEST_SIM 同尺
 
@@ -28,9 +30,9 @@ class ShortTermMemory():
         self._raw = redis.Redis(host=host, port=int(port), decode_responses=False)
         self.prefix = prefix
 
-    def key(self,session_id:str,user_id:str = "default")->tuple[str,str]:
-        base = f"{key_prefix}:{session_id}:{user_id}"
-        return f"{base}:turns",f"{base}:vec"
+    def key(self,session_id:str,user_id:str = "default",embed_model:str |None = embed_model)->tuple[str,str]:
+        base = f"{key_prefix}:{session_id}:{user_id}#{embed_model}-"
+        return f"{base}turns",f"{base}vec"
 
     def add_filter(self, message: list[dict],prev:dict|None = None) -> list[dict]:
         """返回规范化后的消息；返回 None = 这条不该入库。
@@ -84,7 +86,7 @@ class ShortTermMemory():
         item = self.add_filter(message,prev)
         if not item:
             return False
-        k_list,k_vec = self.key(session_id,user_id)
+        k_list,k_vec = self.key(session_id = session_id,user_id = user_id)
 
         prepared = []
         for msg in item:
@@ -96,7 +98,7 @@ class ShortTermMemory():
             prepared.append((msg,vec))
         try:
             n = self.store.llen(k_list)
-            overflow = max(0,n - (max_turns - 1))
+            overflow = max(0,n - (max_turns - len(item)))
             stale_mid = []
             if overflow:
                 for x in self.store.lrange(k_list,-overflow,-1):
@@ -108,7 +110,7 @@ class ShortTermMemory():
             client = self.store.pipeline()
             for msg,vec in prepared:
                 client.lpush(k_list,json.dumps(msg,ensure_ascii=False).encode())
-                if len(vec) == 1024:
+                if len(vec) == embed.DIM:
                     client.hset(k_vec,msg["mid"],np.asarray(vec,dtype = "<f4").tobytes())
             client.ltrim(k_list,0,max_turns - 1)
             if stale_mid:
@@ -124,7 +126,7 @@ class ShortTermMemory():
 
     def recent(self,session_id:str,limit:int = 20,user_id:str = "default")->list[dict]:
         """取最近 limit 轮，按时间正序（旧→新）返回。不做相关性过滤、不做分数门槛。"""
-        k_list,_ = self.key(session_id,user_id)
+        k_list,_ = self.key(session_id = session_id,user_id = user_id)
         try:
             raw = self.store.lrange(k_list,0,limit - 1)      # index 0 是最新
         except Exception as e:
@@ -148,7 +150,13 @@ class ShortTermMemory():
         return True
 
     def search(self,session_id:str,query:str,limit:int = 10,user_id :str = "default",roles:set[str]|None = None,max_age:float|None = None)->list[dict]:
-        k_list,k_vec = self.key(session_id,user_id)
+        """两路独立召回，按照RRF融合，返回结果按时间旧到新排列"""
+        if limit < 0:
+            raise ValueError(f"limit必须大于0")
+        if not query.strip():
+            return []
+
+        k_list,k_vec = self.key(session_id = session_id,user_id = user_id)
         try:
             raw = self.store.lrange(k_list,0,SCAN - 1)
         except Exception as e:
@@ -156,58 +164,61 @@ class ShortTermMemory():
             return []
         if not raw:
             return []
+## 两路独立召回共用同一过滤的消息，构建 key:mid -> value:msg 来进行映射连接
+        now = time.time()
+        by_mid :dict[str,dict] = {}
+        for row in raw:
+            msg = json.loads(row)
+            if self.search_filter(msg,roles=roles,max_age=max_age,now=now):
+                by_mid.setdefault(msg["mid"],msg)
 
-        items = []
-        for msg in raw:
-            try:
-                items.append(json.loads(msg))
-            except (ValueError, TypeError):
-                continue
-
-        items = [m for m in items if self.search_filter(m, roles=roles, max_age=max_age)]
+        items = list(by_mid.values())
+        if not items:
+            return []
 
         # 1. BM25
-        scores = BM25([tokenize(m["content"]) for m in items]).score_all(tokenize(query))
-        order_bm = sorted(range(len(items)),key = lambda i:-scores[i])
+        scores = BM25([tokenize(msg["content"]) for msg in items]).score_all(tokenize(query))
+        order_bm = sorted((i for i,score in enumerate(scores) if score > 0), key=lambda i: scores[i],reverse=True)
         cand = order_bm[:BM25_TOP]
 
-        # 2.向量精排
+        # 2.向量独立召回
+        def unit_vector(values)->np.ndarray:
+            vec = np.asarray(values,dtype = np.float64)
+            if vec.shape != (embed.DIM,) or not np.isfinite(vec).all():
+                raise ValueError(f"向量维度错误或包含非有限值")
+            norm = float(np.linalg.norm(vec))
+            if not np.isfinite(norm) or norm <= 0:
+                raise ValueError("向量范数必须大于0")
+            return vec / norm
+
+        query_vectors = embed.embed([query])
+        if len(query_vectors) != 1:
+            raise ValueError("查询 Embedding 数量应为1")
+        qv = unit_vector(query_vectors[0])
+        blobs = self._raw.hmget(k_vec,[msg["mid"] for msg in items])
         vec_score:dict[int,float] = {}
-        try:
-            qv = np.asarray(embed.embed([query])[0], dtype="<f4")
-            if qv.size == embed.DIM and cand:
-                blobs = self._raw.hmget(k_vec, [items[i]["mid"] for i in cand])   # ← 用 _raw
-                for i, b in zip(cand, blobs):
-                    if b:
-                        v = np.frombuffer(b, dtype="<f4")
-                        vec_score[i] = float(v @ qv)          # 向量已 L2 归一化
-        except Exception:
-            pass                                              # 向量不可用 → 退化为纯 BM25
-        if vec_score:
-            if max(vec_score.values()) < MIN_VEC_SIM:
-                return []
-            else:
-                if not cand or scores[cand[0]] <= 0:
-                    return []
-        # ③ 融合：min-max 归一化后加权（BM25 与余弦量纲不同，必须先归一化）
-        def norm(d: dict[int, float]) -> dict[int, float]:
-            if not d:
-                return {}
-            lo, hi = min(d.values()), max(d.values())
-            if hi > lo:
-                return {k: (v - lo) / (hi - lo) for k,v in d.items()}
-            elif hi == lo and lo == 0:
-                return {k: 0.0 for k,_ in d.items()}
-            else:
-                return {k: 1.0 for k,_ in d.items()}
+        for i,blob in zip(range(len(items)),blobs,strict=True):
+            if blob is None:
+                continue
+            vec = unit_vector(np.frombuffer(blob,dtype = "<f4"))
+            sim = float(np.clip(vec @ qv,-1.0,1.0))
+            if sim < MIN_VEC_SIM:
+                continue
+            vec_score[i] = sim
+        vec_order = sorted(vec_score,key = lambda i:vec_score[i],reverse = True)[:VECTOR_TOP]
 
-        nb, nv = norm({i: scores[i] for i in cand}), norm(vec_score)
-        fused = {i: ALPHA * nb.get(i, 0.0) + (1 - ALPHA) * nv.get(i, 0.0) for i in cand}
-        top = sorted(fused, key=lambda i: -fused[i])[:limit]
+## 3. 两路联合，采用RRF
+        fused : dict[str,float] = {}
+        for order in (cand,vec_order):
+            for rank, i in enumerate(order,start = 1):
+                mid = items[i]["mid"]
+                fused[str(mid)] = fused.get(str(mid),0.0) + 1.0 / (RRF_K + rank)
 
-        out = [items[i] for i in top]
-        out.sort(key = lambda m:m["ts"])                                    # 新→旧 转 旧→新
-        return out
+        top_mids = sorted(fused,key = fused.get,reverse = True)[:limit]
+        result = [by_mid[mid] for mid in top_mids]
+        result.sort(key = lambda msg:msg["ts"])
+        return result
+
 
     @staticmethod
     def to_llm_messages(msgs: list[dict]) -> list[dict]:
