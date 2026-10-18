@@ -19,6 +19,7 @@ dependencies = [
     "openai>=3.8.0",
     "pymilvus>=3.0.2",
     "redis>=8.1.0",
+    "tiktoken>=0.14.0",
 ]
 
 [project.scripts]

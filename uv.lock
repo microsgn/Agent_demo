@@ -26,6 +26,7 @@ dependencies = [
     { name = "openai" },
     { name = "pymilvus" },
     { name = "redis" },
+    { name = "tiktoken" },
 ]
 
 [package.metadata]
@@ -41,6 +42,7 @@ requires-dist = [
     { name = "openai", specifier = ">=3.8.0" },
     { name = "pymilvus", specifier = ">=3.0.2" },
     { name = "redis", specifier = ">=8.1.0" },
+    { name = "tiktoken", specifier = ">=0.14.0" },
 ]
 
 [[package]]
