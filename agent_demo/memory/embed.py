@@ -112,7 +112,7 @@ def embed(texts:list[str],batch_size:int = 20)->list:
         seen : set[int] = set()
         for em in resp:
             local = em.text_index
-            if not isinstance(local, int) or not 0 <= local < len(texts):
+            if not isinstance(local, int) or not 0 <= local < len(chunks):
                 raise EmbeddingError(f"text_index越界：{local!r}")
             if local in seen:
                 raise EmbeddingError(f"重复存入")

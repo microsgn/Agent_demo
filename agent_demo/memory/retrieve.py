@@ -85,9 +85,9 @@ def retrieve(
         for rank, i in enumerate(order, start=1):
             fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + rank)
 
+    qualified = [i for i in fused if vector_scores[i] >= MIN_VECTOR_SIM]
     top_indices = sorted(
-        fused,
-        key=lambda i: (-fused[i], rows[i]["id"]),
+        qualified, key=lambda i: (-fused[i], rows[i]["id"])
     )[:limit]
     return [
         {

@@ -1,15 +1,18 @@
 from .call_llm import call_llm,CompactionError
 from .tokens import remain_tokens,estimate_tokens,need_compaction
+from .sys_prompt import System_prompt
 class context:
-    def __init__(self,N:int):
+    def __init__(self,N:int,system_prompt:System_prompt):
         self.system_list = []
         self.history_list = []
         self.recent_list = []
         self.compaction_list = []
         self.N = N
         self.context = []
-    def build_system(self,system_prompt:str):
-        self.system_list.append({"role":"system","content":system_prompt})
+        self.system_prompt = system_prompt
+
+    def build_system(self):
+        self.system_list.append({"role":"system","content":self.system_prompt.assemble()})
     def build_recent(self,history:list[dict]):
         if len(self.recent_list) < self.N:
             self.recent_list.append(history)
@@ -49,6 +52,8 @@ class context:
         return self.context
 
     def prepare_context(self,references:list[dict],current_turn:list[dict],tools:list[dict]|None = None)->list[dict]:
+        self.system_list.clear()
+        self.build_system()
         messages = self.build_context(references,current_turn)
         input_tokens = estimate_tokens(messages,tools)
         remaining = remain_tokens(input_tokens)

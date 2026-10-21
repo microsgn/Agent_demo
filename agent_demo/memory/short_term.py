@@ -31,7 +31,7 @@ class ShortTermMemory():
         self.prefix = prefix
 
     def key(self,session_id:str,user_id:str = "default",embed_model:str |None = embed_model)->tuple[str,str]:
-        base = f"{key_prefix}:{session_id}:{user_id}#{embed_model}-"
+        base = f"{self.prefix}:{session_id}:{user_id}#{embed_model}-"
         return f"{base}turns",f"{base}vec"
 
     def add_filter(self, message: list[dict],prev:dict|None = None) -> list[dict]:

@@ -86,6 +86,10 @@ class Store:
             response = model.invoke(messages)
             for item in response.items:
                 d = item.model_dump()
+                if d["content"]  not in text:
+                    continue
+                if isinstance(d["conflict_with"],int) and d["conflict_with"] not in [s["id"] for s in old_message]:
+                    continue
                 if d["should_store"] == False:
                     continue
                 if d["is_update"] == True:
@@ -128,7 +132,7 @@ class Store:
         values (%s,%s,%s,%s,%s,%s,%s,%s)
         """
         sql2 = """
-        update facts set status = 'superseded' where id = %s
+        update facts set status = 'superseded' where id = %s and user_id = %s
         """
         with get_conn() as conn, conn.cursor() as cursor:
             for msg in texts:
@@ -138,7 +142,7 @@ class Store:
                 params = (user_id,session_id,text["content"],text["kind"],text["embedding"],EMBED_MODEL,text["is_update"],text["conflict_with"])
                 cursor.execute(sql1,params)
                 if text["conflict_with"] is not None :
-                    params = (text["conflict_with"],)
+                    params = (text["conflict_with"],user_id)
                     cursor.execute(sql2,params)
             cursor.close()
     def process_memory(self,texts:list[str],user_id:str,session_id:str)->None:

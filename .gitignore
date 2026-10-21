@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Local evaluation reports (frozen examples can be copied into evals/baselines/)
+evals/results/
